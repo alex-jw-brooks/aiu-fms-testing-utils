@@ -69,22 +69,22 @@ USE_DISTRIBUTED = os.environ.get("FMS_TEST_SHAPES_DISTRIBUTED", "0") == "1"
 TIMING = os.environ.get("TIMING", "")
 
 ATTN_TYPE = os.environ.get("FMS_TEST_SHAPES_ATTN_TYPE", "sdpa")
-attention_map = {
+ATTENTION_MAP = {
     "sdpa": "sdpa_causal",
     "paged": "spyre_paged_attn",
     "math_fp8": "math_fp8",
     "paged_fp8": "spyre_paged_attn_fp8",
 }
-ATTN_NAME = attention_map[ATTN_TYPE]
+ATTN_NAME = ATTENTION_MAP[ATTN_TYPE]
 
 FORCE_VALIDATION_LEVEL_1 = (
     os.environ.get("FMS_TEST_SHAPES_FORCE_VALIDATION_LEVEL_1", "0") == "1"
 )
-skip_assertions = os.environ.get("FMS_TEST_SHAPES_SKIP_ASSERTIONS", {})
-validation_info_dir = os.environ.get(
+SKIP_ASSERTIONS = os.environ.get("FMS_TEST_SHAPES_SKIP_ASSERTIONS", {})
+VALIDATION_INFO_DIR = os.environ.get(
     "FMS_TEST_SHAPES_VALIDATION_INFO_DIR", "/tmp/models/validation_info"
 )
-common_model_paths = os.environ.get(
+COMMON_MODEL_PATHS = os.environ.get(
     "FMS_TEST_SHAPES_COMMON_MODEL_PATHS",
     [
         LLAMA_3p1_8B_INSTRUCT,
@@ -94,85 +94,85 @@ common_model_paths = os.environ.get(
         LLAMA_3p1_70B_INSTRUCT,
     ],
 )
-model_configuration_path = os.environ.get(
+MODEL_CONFIGURATION_PATH = os.environ.get(
     "FMS_TEST_SHAPES_FROM_MODEL_CONFIGURATION", ""
 )
-model_configuration_frequency = os.environ.get(
+MODEL_CONFIGURATION_FREQUENCY = os.environ.get(
     "FMS_TEST_SHAPES_FROM_MODEL_CONFIGURATION_FREQUENCY", "0"
 )
 
 # for validation level 1, the default is a failure rate of 1%
 # set this environment variable if you would like to relax that threshold
-failure_rate_threshold = os.environ.get("FMS_TEST_SHAPES_FAILURE_THRESHOLD", 0.01)
-default_metrics_threshold = os.environ.get(
+FAILURE_RATE_THRESHOLD = os.environ.get("FMS_TEST_SHAPES_FAILURE_THRESHOLD", 0.01)
+DEFAULT_METRICS_THRESHOLD = os.environ.get(
     "FMS_TEST_SHAPES_METRICS_THRESHOLD", (3.0, 0.001)
 )
-save_validation_info_outputs = (
+SAVE_VALIDATION_INFO_OUTPUTS = (
     os.environ.get("FMS_TEST_SHAPES_SAVE_VALIDATION_INFO_OUTPUTS", "0") == "1"
 )
-common_batch_sizes = os.environ.get("FMS_TEST_SHAPES_COMMON_BATCH_SIZES", [1, 2, 4, 8])
-common_seq_lengths = os.environ.get("FMS_TEST_SHAPES_COMMON_SEQ_LENGTHS", [64, 2048])
-common_max_new_tokens = os.environ.get("FMS_TEST_SHAPES_COMMON_MAX_NEW_TOKENS", [128])
+COMMON_BATCH_SIZES = os.environ.get("FMS_TEST_SHAPES_COMMON_BATCH_SIZES", [1, 2, 4, 8])
+COMMON_SEQ_LENGTHS = os.environ.get("FMS_TEST_SHAPES_COMMON_SEQ_LENGTHS", [64, 2048])
+COMMON_MAX_NEW_TOKENS = os.environ.get("FMS_TEST_SHAPES_COMMON_MAX_NEW_TOKENS", [128])
 
 if USE_DISTRIBUTED:
     dist.init_process_group()
     aiu_dist_setup(dist.get_rank(), dist.get_world_size())
 
 if USE_MICRO_MODELS:
-    validation_info_dir = os.path.join(validation_info_dir, "tiny_models")
+    VALIDATION_INFO_DIR = os.path.join(VALIDATION_INFO_DIR, "tiny_models")
 
 # pass custom model path list for eg: EXPORT FMS_TESTING_COMMON_MODEL_PATHS="/tmp/models/granite-3-8b-base,/tmp/models/granite-7b-base"
-if isinstance(common_model_paths, str):
-    common_model_paths = common_model_paths.split(",")
+if isinstance(COMMON_MODEL_PATHS, str):
+    COMMON_MODEL_PATHS = COMMON_MODEL_PATHS.split(",")
 
 # pass custom failure rate threshold as float
-if isinstance(failure_rate_threshold, str):
-    failure_rate_threshold = float(failure_rate_threshold)
+if isinstance(FAILURE_RATE_THRESHOLD, str):
+    FAILURE_RATE_THRESHOLD = float(FAILURE_RATE_THRESHOLD)
 
 # pass custom default metrics threshold as a comma separated str of floats <cross-entropy threshold>,<mean diff threshold>
-if isinstance(default_metrics_threshold, str):
-    default_metrics_threshold = tuple(
-        [float(m) for m in default_metrics_threshold.split(",")]
+if isinstance(DEFAULT_METRICS_THRESHOLD, str):
+    DEFAULT_METRICS_THRESHOLD = tuple(
+        [float(m) for m in DEFAULT_METRICS_THRESHOLD.split(",")]
     )
 
 # pass custom common batch sizes as a comma separated str of ints
-if isinstance(common_batch_sizes, str):
-    common_batch_sizes = [int(bs) for bs in common_batch_sizes.split(",")]
+if isinstance(COMMON_BATCH_SIZES, str):
+    COMMON_BATCH_SIZES = [int(bs) for bs in COMMON_BATCH_SIZES.split(",")]
 
 # pass custom common seq lengths as a comma separated str of ints
-if isinstance(common_seq_lengths, str):
-    common_seq_lengths = [int(sl) for sl in common_seq_lengths.split(",")]
+if isinstance(COMMON_SEQ_LENGTHS, str):
+    COMMON_SEQ_LENGTHS = [int(sl) for sl in COMMON_SEQ_LENGTHS.split(",")]
 
 # pass custom common max new tokens as a comma separated str of ints
-if isinstance(common_max_new_tokens, str):
-    common_max_new_tokens = [int(mnt) for mnt in common_max_new_tokens.split(",")]
+if isinstance(COMMON_MAX_NEW_TOKENS, str):
+    COMMON_MAX_NEW_TOKENS = [int(mnt) for mnt in COMMON_MAX_NEW_TOKENS.split(",")]
 
 # pass metrics to skip as a comma separated list (ce,mean_diff)
-if isinstance(skip_assertions, str):
+if isinstance(SKIP_ASSERTIONS, str):
     _skip_assertions = []
-    for metric in skip_assertions.split(","):
+    for metric in SKIP_ASSERTIONS.split(","):
         metric = metric.lower()
         if metric not in {"ce", "mean_diff"}:
             pytest.fail(
                 "FMS_TEST_SHAPES_SKIP_ASSERTIONS can only accept metrics ce and mean_diff"
             )
         _skip_assertions.append(metric)
-    skip_assertions = set(_skip_assertions)
+    SKIP_ASSERTIONS = set(_skip_assertions)
 
-compile_dynamic_sendnn = ATTN_TYPE == "paged"
+COMPILE_DYNAMIC_SENDNN = ATTN_TYPE == "paged"
 
-if compile_dynamic_sendnn:
+if COMPILE_DYNAMIC_SENDNN:
     os.environ["VLLM_DT_MAX_CONTEXT_LEN"] = str(
-        (((max(common_seq_lengths) + max(common_max_new_tokens)) // 64) + 1) * 64
+        (((max(COMMON_SEQ_LENGTHS) + max(COMMON_MAX_NEW_TOKENS)) // 64) + 1) * 64
     )
-    os.environ["VLLM_DT_MAX_BATCH_SIZE"] = str(max(max(common_batch_sizes), 2))
+    os.environ["VLLM_DT_MAX_BATCH_SIZE"] = str(max(max(COMMON_BATCH_SIZES), 2))
 
 
 # thresholds are chosen based on 1024 tokens per sequence
 # 1% error threshold rate between cpu fp32 and cuda fp16
 # if a models failure thresholds do not exist in this dict, default to the default_metrics_threshold defined above
 # threshold key is (model_id, is_tiny_model)
-fail_thresholds = {
+FAIL_THRESHOLDS = {
     (LLAMA_3p1_8B_INSTRUCT, False): (
         2.6994638133048965,
         0.00047589250549208347,
@@ -195,21 +195,21 @@ fail_thresholds = {
     ),
 }
 
-if model_configuration_path != "":
+if MODEL_CONFIGURATION_PATH != "":
     print(
         "ignoring FMS_TEST_SHAPES_COMMON_MODEL_PATHS, FMS_TEST_SHAPES_USE_MICRO_MODELS as configuration will be set by FMS_TEST_SHAPES_FROM_MODEL_CONFIGURATION"
     )
     USE_MICRO_MODELS = False
-    common_model_paths = []
-    frequency = int(model_configuration_frequency)
-    with open(model_configuration_path, "r") as f:
+    COMMON_MODEL_PATHS = []
+    frequency = int(MODEL_CONFIGURATION_FREQUENCY)
+    with open(MODEL_CONFIGURATION_PATH, "r") as f:
         for line in f:
             try:
                 model_config = json.loads(line)
                 if model_config["frequency"] <= frequency:
-                    common_model_paths.append(model_config["model_id"])
+                    COMMON_MODEL_PATHS.append(model_config["model_id"])
                     # assume fullsize models
-                    fail_thresholds[(model_config["model_id"], USE_MICRO_MODELS)] = (
+                    FAIL_THRESHOLDS[(model_config["model_id"], USE_MICRO_MODELS)] = (
                         model_config["ce"],
                         model_config["mean_diff"],
                     )
@@ -218,10 +218,10 @@ if model_configuration_path != "":
 
 common_shapes = list(
     itertools.product(
-        common_model_paths,
-        common_batch_sizes,
-        common_seq_lengths,
-        common_max_new_tokens,
+        COMMON_MODEL_PATHS,
+        COMMON_BATCH_SIZES,
+        COMMON_SEQ_LENGTHS,
+        COMMON_MAX_NEW_TOKENS,
     )
 )
 
@@ -235,7 +235,7 @@ __custom_adapter = {"architecture": "llama", "source": "fms_aiu"}
 @pytest.fixture(autouse=True)
 def reset_compiler():
     yield  # run the test
-    if not compile_dynamic_sendnn:
+    if not COMPILE_DYNAMIC_SENDNN:
         torch.compiler.reset()
         torch._dynamo.reset()
         os.environ.pop("COMPILATION_MODE", None)
@@ -329,7 +329,7 @@ def __get_validation_info_full_path(
     model_path, batch_size, seq_length, max_new_tokens, seed, device_type="cpu"
 ):
     validation_file_name = f"{get_default_validation_prefix(model_path, max_new_tokens, batch_size, seq_length, 'fp16')}.{device_type}_validation_info.{seed}.out"
-    full_path = os.path.join(validation_info_dir, validation_file_name)
+    full_path = os.path.join(VALIDATION_INFO_DIR, validation_file_name)
     return full_path
 
 
@@ -365,10 +365,10 @@ class PersistentModel:
 
             model.eval()
             model.compile(
-                backend="sendnn", options={"sendnn.dynamic": compile_dynamic_sendnn}
+                backend="sendnn", options={"sendnn.dynamic": COMPILE_DYNAMIC_SENDNN}
             )
 
-            if compile_dynamic_sendnn:
+            if COMPILE_DYNAMIC_SENDNN:
                 self.model = model
 
             return model
@@ -405,7 +405,39 @@ class PersistentModel:
 def persistent_model():
     return PersistentModel()
 
+##### Common utils
+# metric calculator based on the cross-entropy and mean diff for each decode step
+def _metric_calculator(r: torch.Tensor, t: torch.Tensor):
+    cross_entropy = torch.nn.CrossEntropyLoss()(
+        r, t.softmax(dim=1).to(dtype=torch.float32)
+    )
+    diff = torch.mean(
+        torch.abs(
+            r.softmax(dim=1).to(dtype=torch.float32)
+            - t.softmax(dim=1).to(dtype=torch.float32)
+        )
+    )
+    return (cross_entropy, diff)
 
+def _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens):
+    # test the failure rates for across all tokens
+    diff_failure_rate = len(diff_fail_responses_list) / total_tokens
+    ce_failure_rate = len(ce_fail_responses_list) / total_tokens
+    dprint(f"mean diff failure rate: {diff_failure_rate}")
+    dprint(f"cross entropy loss failure rate: {ce_failure_rate}")
+    if "mean_diff" not in SKIP_ASSERTIONS:
+        assert diff_failure_rate < FAILURE_RATE_THRESHOLD, (
+            f"failure rate for mean diff was too high: {diff_failure_rate}"
+        )
+    if "ce" not in SKIP_ASSERTIONS:
+        assert ce_failure_rate < FAILURE_RATE_THRESHOLD, (
+            f"failure rate for cross entropy loss was too high: {ce_failure_rate}"
+        )
+        print("passed validation level 1")
+    else:
+        print("passed validation level 0")
+
+##### Test definitions
 @pytest.mark.parametrize(
     "model_path,batch_size,seq_length,max_new_tokens", common_shapes
 )
@@ -479,7 +511,7 @@ def test_common_shapes(
 
     # warmup aiu model
     warmup_model(
-        model, input_ids, max_new_tokens, compile_dynamic_sendnn, **extra_kwargs
+        model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs
     )
 
     # generate cpu validation info
@@ -497,7 +529,7 @@ def test_common_shapes(
             **extra_kwargs,
         )
 
-        if save_validation_info_outputs:
+        if SAVE_VALIDATION_INFO_OUTPUTS:
             cpu_validation_info.save(
                 __get_validation_info_full_path(
                     model_path, batch_size, seq_length, max_new_tokens, 0
@@ -537,19 +569,6 @@ def test_common_shapes(
         else:
             dprint("passed validation level 0, testing validation level 1")
 
-        # metric calculator based on the cross-entropy and mean diff for each decode step
-        def _metric_calculator(r: torch.Tensor, t: torch.Tensor):
-            cross_entropy = torch.nn.CrossEntropyLoss()(
-                r, t.softmax(dim=1).to(dtype=torch.float32)
-            )
-            diff = torch.mean(
-                torch.abs(
-                    r.softmax(dim=1).to(dtype=torch.float32)
-                    - t.softmax(dim=1).to(dtype=torch.float32)
-                )
-            )
-            return (cross_entropy, diff)
-
         iters = 1024 // max_new_tokens
         ce_fail_responses_list = []
         diff_fail_responses_list = []
@@ -577,7 +596,7 @@ def test_common_shapes(
                     dprint(
                         f"cpu validation info extracted for validation level 1 - iter={i}"
                     )
-                    if save_validation_info_outputs:
+                    if SAVE_VALIDATION_INFO_OUTPUTS:
                         cpu_validation_info.save(
                             __get_validation_info_full_path(
                                 model_path, batch_size, seq_length, max_new_tokens, i
@@ -602,7 +621,7 @@ def test_common_shapes(
                 **extra_kwargs,
             )
             dprint(f"aiu validation info extracted for validation level 1 - iter={i}")
-            if save_validation_info_outputs:
+            if SAVE_VALIDATION_INFO_OUTPUTS:
                 aiu_validation_info.save(
                     __get_validation_info_full_path(
                         model_path, batch_size, seq_length, max_new_tokens, i, "aiu"
@@ -620,20 +639,20 @@ def test_common_shapes(
 
             # if we do not have real model weights, use a default_metrics_threshold
             if USE_MICRO_MODELS and micro_model_path is None:
-                ce_threshold, diff_threshold = default_metrics_threshold
+                ce_threshold, diff_threshold = DEFAULT_METRICS_THRESHOLD
             # if we have real weights, try and get the proper validation metrics threshold
             else:
                 # if we have a micro model with real weights, but no real thresholds, default to the full model thresholds
                 if USE_MICRO_MODELS:
-                    ce_threshold, diff_threshold = fail_thresholds.get(
+                    ce_threshold, diff_threshold = FAIL_THRESHOLDS.get(
                         (model_path, True),
-                        fail_thresholds.get(
-                            (model_path, False), default_metrics_threshold
+                        FAIL_THRESHOLDS.get(
+                            (model_path, False), DEFAULT_METRICS_THRESHOLD
                         ),
                     )
                 else:
-                    ce_threshold, diff_threshold = fail_thresholds.get(
-                        (model_path, False), default_metrics_threshold
+                    ce_threshold, diff_threshold = FAIL_THRESHOLDS.get(
+                        (model_path, False), DEFAULT_METRICS_THRESHOLD
                     )
 
             # get all failed responses for each metric
@@ -649,23 +668,8 @@ def test_common_shapes(
             diff_fail_responses_list.extend(diff_fail_responses)
             total_tokens += len(level_1_metrics)
 
-        # test the failure rates for across all tokens
-        diff_failure_rate = len(diff_fail_responses_list) / total_tokens
-        ce_failure_rate = len(ce_fail_responses_list) / total_tokens
-        dprint(f"mean diff failure rate: {diff_failure_rate}")
-        dprint(f"cross entropy loss failure rate: {ce_failure_rate}")
-        if "mean_diff" not in skip_assertions:
-            assert diff_failure_rate < failure_rate_threshold, (
-                f"failure rate for mean diff was too high: {diff_failure_rate}"
-            )
-        if "ce" not in skip_assertions:
-            assert ce_failure_rate < failure_rate_threshold, (
-                f"failure rate for cross entropy loss was too high: {ce_failure_rate}"
-            )
+        _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens)
 
-        print("passed validation level 1")
-    else:
-        print("passed validation level 0")
 
 @pytest.mark.parametrize("cache_status", ["miss", "hit"])
 def test_cache(cache_status):
@@ -679,10 +683,10 @@ def test_cache(cache_status):
         # Remove cache from previous runs
         shutil.rmtree(os.getcwd()+"/.cache")
     
-    model_path = "ibm-granite/granite-3.3-8b-instruct"
-    batch_size = common_batch_sizes[0]
-    seq_length = common_seq_lengths[0] 
-    max_new_tokens = common_max_new_tokens[0]
+    model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000" # ibm-granite/granite-3.3-8b-instruct"
+    batch_size = 1# common_batch_sizes[0]
+    seq_length = 128#common_seq_lengths[0] 
+    max_new_tokens = COMMON_MAX_NEW_TOKENS[0]
     
     dprint(f"testing with cache: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, cache={cache_status}")
 
@@ -750,7 +754,7 @@ def test_cache(cache_status):
     extra_kwargs["attn_name"] = ATTN_NAME
 
     # warmup aiu model
-    warmup_model(model, input_ids, max_new_tokens, compile_dynamic_sendnn, **extra_kwargs)
+    warmup_model(model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs)
  
     # generate cpu validation info
     cpu_validation_info = __load_validation_info(
@@ -766,7 +770,7 @@ def test_cache(cache_status):
             **extra_kwargs,
         )
 
-        if save_validation_info_outputs:
+        if SAVE_VALIDATION_INFO_OUTPUTS:
             cpu_validation_info.save(
                 __get_validation_info_full_path(
                     model_path, batch_size, seq_length, max_new_tokens, 0
@@ -813,19 +817,6 @@ def test_cache(cache_status):
         else:
             dprint("passed validation level 0, testing validation level 1")
 
-        # metric calculator based on the cross-entropy and mean diff for each decode step
-        def _metric_calculator(r: torch.Tensor, t: torch.Tensor):
-            cross_entropy = torch.nn.CrossEntropyLoss()(
-                r, t.softmax(dim=1).to(dtype=torch.float32)
-            )
-            diff = torch.mean(
-                torch.abs(
-                    r.softmax(dim=1).to(dtype=torch.float32)
-                    - t.softmax(dim=1).to(dtype=torch.float32)
-                )
-            )
-            return (cross_entropy, diff)
-
         iters = 1024 // max_new_tokens
         ce_fail_responses_list = []
         diff_fail_responses_list = []
@@ -852,7 +843,7 @@ def test_cache(cache_status):
                     dprint(
                         f"cpu validation info extracted for validation level 1 - iter={i}"
                     )
-                    if save_validation_info_outputs:
+                    if SAVE_VALIDATION_INFO_OUTPUTS:
                         cpu_validation_info.save(
                             __get_validation_info_full_path(
                                 model_path, batch_size, seq_length, max_new_tokens, i
@@ -876,7 +867,7 @@ def test_cache(cache_status):
                 **extra_kwargs,
             )
             dprint(f"aiu validation info extracted for validation level 1 - iter={i}")
-            if save_validation_info_outputs:
+            if SAVE_VALIDATION_INFO_OUTPUTS:
                 aiu_validation_info.save(
                     __get_validation_info_full_path(
                         model_path, batch_size, seq_length, max_new_tokens, i, "aiu"
@@ -894,17 +885,17 @@ def test_cache(cache_status):
 
             # if we do not have real model weights, use a default_metrics_threshold
             if USE_MICRO_MODELS and micro_model_path is None:
-                ce_threshold, diff_threshold = default_metrics_threshold
+                ce_threshold, diff_threshold = DEFAULT_METRICS_THRESHOLD
             # if we have real weights, try and get the proper validation metrics threshold
             else:
                 # if we have a micro model with real weights, but no real thresholds, default to the full model thresholds
                 if USE_MICRO_MODELS:
-                    ce_threshold, diff_threshold = fail_thresholds.get(
-                        (model_path, True), fail_thresholds.get((model_path, False), default_metrics_threshold)
+                    ce_threshold, diff_threshold = FAIL_THRESHOLDS.get(
+                        (model_path, True), FAIL_THRESHOLDS.get((model_path, False), DEFAULT_METRICS_THRESHOLD)
                     )
                 else:
-                    ce_threshold, diff_threshold = fail_thresholds.get(
-                        (model_path, False), default_metrics_threshold
+                    ce_threshold, diff_threshold = FAIL_THRESHOLDS.get(
+                        (model_path, False), DEFAULT_METRICS_THRESHOLD
                     )
 
             # get all failed responses for each metric
@@ -920,19 +911,4 @@ def test_cache(cache_status):
             diff_fail_responses_list.extend(diff_fail_responses)
             total_tokens += len(level_1_metrics)
 
-        # test the failure rates for across all tokens
-        diff_failure_rate = len(diff_fail_responses_list) / total_tokens
-        ce_failure_rate = len(ce_fail_responses_list) / total_tokens
-        dprint(f"mean diff failure rate: {diff_failure_rate}")
-        dprint(f"cross entropy loss failure rate: {ce_failure_rate}")
-        if "mean_diff" not in skip_assertions:
-            assert diff_failure_rate < failure_rate_threshold, (
-                f"failure rate for mean diff was too high: {diff_failure_rate}"
-            )
-        if "ce" not in skip_assertions:
-            assert ce_failure_rate < failure_rate_threshold, (
-                f"failure rate for cross entropy loss was too high: {ce_failure_rate}"
-            )
-        print("passed validation level 1")
-    else:
-        print("passed validation level 0")
+        _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens)
