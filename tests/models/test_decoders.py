@@ -168,6 +168,7 @@ if COMPILE_DYNAMIC_SENDNN:
     os.environ["VLLM_DT_MAX_BATCH_SIZE"] = str(max(max(COMMON_BATCH_SIZES), 2))
 
 
+
 # thresholds are chosen based on 1024 tokens per sequence
 # 1% error threshold rate between cpu fp32 and cuda fp16
 # if a models failure thresholds do not exist in this dict, default to the default_metrics_threshold defined above
@@ -231,6 +232,9 @@ common_shapes = list(
 # note: llama already has many adapters for aiu and they are the same for all models, so just use llama. This way we don't need to re-register a new architecture / adapter step (we can just re-use)
 __custom_adapter = {"architecture": "llama", "source": "fms_aiu"}
 
+### Additional configuration for testing caching correctness
+# Directory to be used for testing torch sendnn caching
+CACHE_DIR = os.path.join([os.getcwd(), ".cache"])
 
 @pytest.fixture(autouse=True)
 def reset_compiler():
@@ -670,18 +674,17 @@ def test_common_shapes(
 
         _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens)
 
-
 @pytest.mark.parametrize("cache_status", ["miss", "hit"])
 def test_cache(cache_status):
     torch.manual_seed(42)
     torch.set_grad_enabled(False)
     os.environ["TORCH_SENDNN_CACHE_ENABLE"] = "1"
-    os.environ["TORCH_SENDNN_CACHE_DIR"] = os.getcwd()+"/.cache"
+    os.environ["TORCH_SENDNN_CACHE_DIR"] = CACHE_DIR
     os.environ["COMPILATION_MODE"] = "offline_decoder"
     
-    if cache_status == "miss" and os.path.isdir(os.getcwd()+"/.cache"):
+    if cache_status == "miss" and os.path.isdir(CACHE_DIR):
         # Remove cache from previous runs
-        shutil.rmtree(os.getcwd()+"/.cache")
+        shutil.rmtree(CACHE_DIR)
     
     model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000" # ibm-granite/granite-3.3-8b-instruct"
     batch_size = 1# common_batch_sizes[0]
@@ -791,7 +794,7 @@ def test_cache(cache_status):
     dprint("aiu validation info extracted for validation level 0")
     
     # check cache status before validating cached results
-    updated_cache_len = len(os.listdir(os.getcwd()+"/.cache")) if os.path.isdir(os.getcwd()+"/.cache") else 0
+    updated_cache_len = len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
     if cache_status == "miss":
         assert updated_cache_len ==  max_new_tokens, (
                 "cache directory not populated on cache miss"
