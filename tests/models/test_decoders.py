@@ -244,6 +244,7 @@ def reset_compiler():
         torch._dynamo.reset()
         os.environ.pop("COMPILATION_MODE", None)
         os.environ.pop('TORCH_SENDNN_CACHE_ENABLE', None)
+        # FIXME - this fixture breaks stuff if we don't run the cache test first
 
 # TODO: Currently, gptq does not have the same level of support as non-gptq models for get_model. This method provides the extra requirements for gptq for get_model,
 #  however ideally, these fixes should be done in foundation-model-stack.
@@ -719,32 +720,73 @@ def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, t
 
 
 ##### Test definitions
+def _run_cpu_aiu_validation_test(model_path, batch_size, seq_length, max_new_tokens, cpu_model, aiu_model, micro_model_path, verify_cache_state=None):
+    # Get the tokenizer and AIU / CPU models to compare
+    tokenizer = tokenizers.get_tokenizer(model_path)
 
-# NOTE - currently this test needs to be run before the common shapes test, or else
-# the compiler reset fixture can put it in a strange state and cause bad behaviors
-@pytest.mark.parametrize("cache_status", ["miss", "hit"])
-def test_cache(cache_status):
-    torch.manual_seed(42)
-    torch.set_grad_enabled(False)
+    # prepare input_ids
+    input_ids, extra_kwargs = __prepare_inputs(batch_size, seq_length, tokenizer)
+
+    # warmup aiu model
+    warmup_model(
+        aiu_model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs
+    )
+
+    # Run validation level 0
+    failed_validation_level_0, validation_zero_info = run_validation_level_0(
+        model_path, batch_size, seq_length, max_new_tokens, tokenizer, cpu_model, input_ids, extra_kwargs, aiu_model
+    )
+
+    # Used only for cache tests; this is a nonparametric closure that
+    # should assert the cache for torch sendnn is in the correct state
+    # for this test
+    if verify_cache_state is not None:
+        verify_cache_state()
+
+    # if level 0 fails validation, validate level 1
+    if FORCE_VALIDATION_LEVEL_1 or failed_validation_level_0:
+        if failed_validation_level_0:
+            dprint("failed validation level 0, testing validation level 1")
+        else:
+            dprint("passed validation level 0, testing validation level 1")
+        run_validation_level_1(
+            model_path, batch_size, seq_length, max_new_tokens, tokenizer, cpu_model, input_ids, extra_kwargs, aiu_model, micro_model_path, validation_zero_info,
+        )
+
+
+def _reset_cache_settings(purge_cache_dir):
     os.environ["TORCH_SENDNN_CACHE_ENABLE"] = "1"
     os.environ["TORCH_SENDNN_CACHE_DIR"] = CACHE_DIR
     os.environ["COMPILATION_MODE"] = "offline_decoder"
 
-    if cache_status == "miss" and os.path.isdir(CACHE_DIR):
-        # Remove cache from previous runs
+    # Ensure we start in clean state
+    if purge_cache_dir and os.path.isdir(CACHE_DIR):
         shutil.rmtree(CACHE_DIR)
 
-    model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000" # ibm-granite/granite-3.3-8b-instruct"
-    batch_size = 1# common_batch_sizes[0]
-    seq_length = 128#common_seq_lengths[0] 
-    max_new_tokens = COMMON_MAX_NEW_TOKENS[0]
 
-    dprint(f"testing with cache: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, cache={cache_status}")
+@pytest.fixture
+def use_cached_model():
+    """Configures the tochsendnn cache and runs the AIU model prior to test execution;
+    this is computationally expensive and should only be used in situations like testing
+    cache hit correctness;
+    """
+    torch.manual_seed(42)
+    torch.set_grad_enabled(False)
+    _reset_cache_settings(purge_cache_dir=True)
+    model_path, batch_size, seq_length, max_new_tokens = _get_cache_test_params()
+    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
+
+    def verify_cache_miss():
+        updated_cache_len = len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
+        assert updated_cache_len ==  max_new_tokens, (
+                "cache directory not populated on cache miss"
+            )
+
+
+    dprint(f"Setting up cache [i.e., cache miss check] for model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}")
 
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
-
-    tokenizer = tokenizers.get_tokenizer(model_path)
 
     model = get_aiu_model(
         model_path,
@@ -758,40 +800,65 @@ def test_cache(cache_status):
         micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
     )
 
-    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
-
-    # prepare input_ids
-    input_ids, extra_kwargs = __prepare_inputs(batch_size, seq_length, tokenizer)
-
-    # warmup aiu model
-    warmup_model(model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs)
-
-    # Run validation level 0
-    failed_validation_level_0, validation_zero_info = run_validation_level_0(
-        model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model
+    _run_cpu_aiu_validation_test(
+        model_path,
+        batch_size,
+        seq_length,
+        max_new_tokens,
+        validation_model,
+        model,
+        micro_model_path,
+        verify_cache_state=verify_cache_miss,
     )
 
-    updated_cache_len = len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
-    if cache_status == "miss":
-        assert updated_cache_len ==  max_new_tokens, (
-                "cache directory not populated on cache miss"
-            )
-        return
-    else:
-        assert updated_cache_len ==  max_new_tokens, (
-                "cache miss occurred when hit was expected"
-            )
+def _get_cache_test_params():
+    model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000" # ibm-granite/granite-3.3-8b-instruct"
+    batch_size = 1# common_batch_sizes[0]
+    seq_length = 128#common_seq_lengths[0]
+    max_new_tokens = COMMON_MAX_NEW_TOKENS[0]
+    return [model_path, batch_size, seq_length, max_new_tokens]
 
-    # if level 0 fails validation, validate level 1
-    if FORCE_VALIDATION_LEVEL_1 or failed_validation_level_0:
-        if failed_validation_level_0:
-            dprint("failed validation level 0, testing validation level 1")
-        else:
-            dprint("passed validation level 0, testing validation level 1")
-        run_validation_level_1(
-            model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model, micro_model_path, validation_zero_info,
+
+def test_cache(use_cached_model):
+    torch.manual_seed(42)
+    torch.set_grad_enabled(False)
+    _reset_cache_settings(purge_cache_dir=False)
+
+    model_path, batch_size, seq_length, max_new_tokens = _get_cache_test_params()
+    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
+
+    def verify_cache_hit():
+        updated_cache_len = len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
+        assert updated_cache_len ==  max_new_tokens, (
+            "cache miss occurred when hit was expected"
         )
+    dprint(f"testing: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, for cache hit")
 
+    # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
+    gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
+
+    model = get_aiu_model(
+        model_path,
+        gptq_kwargs_aiu,
+        persistent_model_inst=None,
+    )
+
+    validation_model = get_cpu_model(
+        model_path,
+        gptq_kwargs_cpu,
+        micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
+    )
+
+    _run_cpu_aiu_validation_test(
+        model_path,
+        batch_size,
+        seq_length,
+        max_new_tokens,
+        validation_model,
+        model,
+        micro_model_path,
+        verify_cache_state=verify_cache_hit,
+    )
 
 @pytest.mark.parametrize(
     "model_path,batch_size,seq_length,max_new_tokens", common_shapes
@@ -811,9 +878,6 @@ def test_common_shapes(
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
 
-    # Get the tokenizer and AIU / CPU models to compare
-    tokenizer = tokenizers.get_tokenizer(model_path)
-
     model = get_aiu_model(
         model_path,
         gptq_kwargs_aiu,
@@ -825,26 +889,14 @@ def test_common_shapes(
         gptq_kwargs_cpu,
         micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
     )
-
-    # prepare input_ids
-    input_ids, extra_kwargs = __prepare_inputs(batch_size, seq_length, tokenizer)
-
-    # warmup aiu model
-    warmup_model(
-        model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs
+    _run_cpu_aiu_validation_test(
+        model_path,
+        batch_size,
+        seq_length,
+        max_new_tokens,
+        validation_model,
+        model,
+        micro_model_path,
     )
 
-    # Run validation level 0
-    failed_validation_level_0, validation_zero_info = run_validation_level_0(
-        model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model
-    )
 
-    # if level 0 fails validation, validate level 1
-    if FORCE_VALIDATION_LEVEL_1 or failed_validation_level_0:
-        if failed_validation_level_0:
-            dprint("failed validation level 0, testing validation level 1")
-        else:
-            dprint("passed validation level 0, testing validation level 1")
-        run_validation_level_1(
-            model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model, micro_model_path, validation_zero_info,
-        )
