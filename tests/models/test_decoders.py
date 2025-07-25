@@ -571,49 +571,7 @@ def resolve_thresholds(model_path, micro_model_path):
             )
     return ce_threshold, diff_threshold
 
-##### Test definitions
-@pytest.mark.parametrize(
-    "model_path,batch_size,seq_length,max_new_tokens", common_shapes
-)
-def test_common_shapes(
-    model_path, batch_size, seq_length, max_new_tokens, persistent_model
-):
-    torch.manual_seed(42)
-    torch.set_grad_enabled(False)
-    os.environ["COMPILATION_MODE"] = "offline_decoder"
-    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
-
-    dprint(
-        f"testing model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}"
-    )
-
-    # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
-    gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
-
-    # Get the tokenizer and AIU / CPU models to compare
-    tokenizer = tokenizers.get_tokenizer(model_path)
-
-    model = get_aiu_model(
-        model_path,
-        gptq_kwargs_aiu,
-        persistent_model_inst=persistent_model,
-    )
-
-    validation_model = get_cpu_model(
-        model_path,
-        gptq_kwargs_cpu,
-        micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
-    )
-
-
-    # prepare input_ids
-    input_ids, extra_kwargs = __prepare_inputs(batch_size, seq_length, tokenizer)
-
-    # warmup aiu model
-    warmup_model(
-        model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs
-    )
-
+def run_validation_level_0(model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model):
     cpu_validation_info = get_cpu_validation_information(
         model_path,
         batch_size,
@@ -656,7 +614,142 @@ def test_common_shapes(
         aiu_validation_info.get_info("tokens"), cpu_static_tokens
     )
 
-    failed_validation_level_0 = len(failed_responses) != 0
+    # Keep things we may need on the first iter for validation 1
+    validation_zero_info = {
+        "cpu_validation_info": cpu_validation_info,
+        "cpu_static_tokens": cpu_static_tokens,
+        "eos_indexes": eos_indexes,
+    }
+    return len(failed_responses) != 0, validation_zero_info
+
+
+def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model, micro_model_path, validation_zero_info):
+    iters = 1024 // max_new_tokens
+    ce_fail_responses_list = []
+    diff_fail_responses_list = []
+    total_tokens = 0
+    for i in range(iters):
+        # for iteration 0, we have computed the cpu validation info in the prior step for seed=0, so skip
+        if i != 0:
+
+            cpu_validation_info = get_cpu_validation_information(
+                model_path,
+                batch_size,
+                seq_length,
+                max_new_tokens,
+                tokenizer,
+                validation_model,
+                input_ids,
+                extra_kwargs,
+                token_iter=i,
+            )
+            dprint(
+                f"cpu validation info extracted for validation level 1 - iter={i}"
+            )
+
+            cpu_static_tokens = cpu_validation_info.get_info("tokens")
+            eos_indexes = __find_eos_index(
+                cpu_static_tokens,
+                tokenizer.eos_token_id,
+                seq_length,
+                max_new_tokens,
+            )
+        else:
+            # TODO this can be cleaned up further
+            cpu_validation_info = validation_zero_info["cpu_validation_info"]
+            cpu_static_tokens = validation_zero_info["cpu_static_tokens"]
+            eos_indexes = validation_zero_info["eos_indexes"]
+
+
+        aiu_validation_info = get_aiu_validation_information(
+            model_path=model_path,
+            batch_size=batch_size,
+            seq_length=seq_length,
+            max_new_tokens=max_new_tokens,
+            model=model,
+            input_ids=input_ids,
+            post_iteration_hook=GoldenTokenHook(cpu_static_tokens),
+            only_last_token=ATTN_TYPE != "paged",
+            skip_save=True,
+            extra_kwargs=extra_kwargs,
+            token_iter=i,
+        )
+        dprint(f"aiu validation info extracted for validation level 1 - iter={i}")
+
+
+        # capture all level 1 metrics
+        level_1_metrics = capture_level_1_metrics(
+            cpu_validation_info.get_info("logits"),
+            aiu_validation_info.get_info("logits"),
+            top_k_loss_calculator(20, _metric_calculator),
+        )
+        # only consider those metrics captured prior to the eos
+        level_1_metrics = __filter_before_eos(level_1_metrics, eos_indexes)
+
+        ce_threshold, diff_threshold = resolve_thresholds(model_path, micro_model_path)
+
+        # get all failed responses for each metric
+        ce_fail_responses = filter_failed_level_1_cases(
+            level_1_metrics, lambda m: m[0] >= ce_threshold
+        )
+        diff_fail_responses = filter_failed_level_1_cases(
+            level_1_metrics,
+            lambda m: m[1] >= diff_threshold,
+        )
+
+        ce_fail_responses_list.extend(ce_fail_responses)
+        diff_fail_responses_list.extend(diff_fail_responses)
+        total_tokens += len(level_1_metrics)
+
+    _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens)
+
+
+##### Test definitions
+@pytest.mark.parametrize(
+    "model_path,batch_size,seq_length,max_new_tokens", common_shapes
+)
+def test_common_shapes(
+    model_path, batch_size, seq_length, max_new_tokens, persistent_model
+):
+    torch.manual_seed(42)
+    torch.set_grad_enabled(False)
+    os.environ["COMPILATION_MODE"] = "offline_decoder"
+    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
+
+    dprint(
+        f"testing model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}"
+    )
+
+    # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
+    gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
+
+    # Get the tokenizer and AIU / CPU models to compare
+    tokenizer = tokenizers.get_tokenizer(model_path)
+
+    model = get_aiu_model(
+        model_path,
+        gptq_kwargs_aiu,
+        persistent_model_inst=persistent_model,
+    )
+
+    validation_model = get_cpu_model(
+        model_path,
+        gptq_kwargs_cpu,
+        micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
+    )
+
+    # prepare input_ids
+    input_ids, extra_kwargs = __prepare_inputs(batch_size, seq_length, tokenizer)
+
+    # warmup aiu model
+    warmup_model(
+        model, input_ids, max_new_tokens, COMPILE_DYNAMIC_SENDNN, **extra_kwargs
+    )
+
+    # Run validation level 0
+    failed_validation_level_0, validation_zero_info = run_validation_level_0(
+        model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model
+    )
 
     # if level 0 fails validation, validate level 1
     if FORCE_VALIDATION_LEVEL_1 or failed_validation_level_0:
@@ -664,80 +757,9 @@ def test_common_shapes(
             dprint("failed validation level 0, testing validation level 1")
         else:
             dprint("passed validation level 0, testing validation level 1")
-
-        iters = 1024 // max_new_tokens
-        ce_fail_responses_list = []
-        diff_fail_responses_list = []
-        total_tokens = 0
-        for i in range(iters):
-            # for iteration 0, we have computed the cpu validation info in the prior step for seed=0, so skip
-            if i != 0:
-
-                cpu_validation_info = get_cpu_validation_information(
-                    model_path,
-                    batch_size,
-                    seq_length,
-                    max_new_tokens,
-                    tokenizer,
-                    validation_model,
-                    input_ids,
-                    extra_kwargs,
-                    token_iter=i,
-                )
-                dprint(
-                    f"cpu validation info extracted for validation level 1 - iter={i}"
-                )
-
-                cpu_static_tokens = cpu_validation_info.get_info("tokens")
-                eos_indexes = __find_eos_index(
-                    cpu_static_tokens,
-                    tokenizer.eos_token_id,
-                    seq_length,
-                    max_new_tokens,
-                )
-
-
-            aiu_validation_info = get_aiu_validation_information(
-                model_path=model_path,
-                batch_size=batch_size,
-                seq_length=seq_length,
-                max_new_tokens=max_new_tokens,
-                model=model,
-                input_ids=input_ids,
-                post_iteration_hook=GoldenTokenHook(cpu_static_tokens),
-                only_last_token=ATTN_TYPE != "paged",
-                skip_save=True,
-                extra_kwargs=extra_kwargs,
-                token_iter=i,
-            )
-            dprint(f"aiu validation info extracted for validation level 1 - iter={i}")
-
-
-            # capture all level 1 metrics
-            level_1_metrics = capture_level_1_metrics(
-                cpu_validation_info.get_info("logits"),
-                aiu_validation_info.get_info("logits"),
-                top_k_loss_calculator(20, _metric_calculator),
-            )
-            # only consider those metrics captured prior to the eos
-            level_1_metrics = __filter_before_eos(level_1_metrics, eos_indexes)
-
-            ce_threshold, diff_threshold = resolve_thresholds(model_path, micro_model_path)
-
-            # get all failed responses for each metric
-            ce_fail_responses = filter_failed_level_1_cases(
-                level_1_metrics, lambda m: m[0] >= ce_threshold
-            )
-            diff_fail_responses = filter_failed_level_1_cases(
-                level_1_metrics,
-                lambda m: m[1] >= diff_threshold,
-            )
-
-            ce_fail_responses_list.extend(ce_fail_responses)
-            diff_fail_responses_list.extend(diff_fail_responses)
-            total_tokens += len(level_1_metrics)
-
-        _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens)
+        run_validation_level_1(
+            model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model, micro_model_path, validation_zero_info,
+        )
 
 # @pytest.mark.parametrize("cache_status", ["miss", "hit"])
 # def test_cache(cache_status):
