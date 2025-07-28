@@ -231,10 +231,6 @@ common_shapes = list(
 # note: llama already has many adapters for aiu and they are the same for all models, so just use llama. This way we don't need to re-register a new architecture / adapter step (we can just re-use)
 __custom_adapter = {"architecture": "llama", "source": "fms_aiu"}
 
-### Additional configuration for testing caching correctness
-# Directory to be used for testing torch sendnn caching
-CACHE_DIR = os.path.join(os.getcwd(), ".cache")
-
 
 @pytest.fixture(autouse=True)
 def reset_compiler():
@@ -243,8 +239,6 @@ def reset_compiler():
         torch.compiler.reset()
         torch._dynamo.reset()
         os.environ.pop("COMPILATION_MODE", None)
-        os.environ.pop("TORCH_SENDNN_CACHE_ENABLE", None)
-        # FIXME - this fixture breaks stuff if we don't run the cache test first
 
 
 # TODO: Currently, gptq does not have the same level of support as non-gptq models for get_model. This method provides the extra requirements for gptq for get_model,
@@ -848,12 +842,20 @@ def _run_cpu_aiu_validation_test(
 
 def _reset_cache_settings(purge_cache_dir):
     os.environ["TORCH_SENDNN_CACHE_ENABLE"] = "1"
-    os.environ["TORCH_SENDNN_CACHE_DIR"] = CACHE_DIR
     os.environ["COMPILATION_MODE"] = "offline_decoder"
+    cache_dir = os.environ["TORCH_SENDNN_CACHE_DIR"]
 
     # Ensure we start in clean state
-    if purge_cache_dir and os.path.isdir(CACHE_DIR):
-        shutil.rmtree(CACHE_DIR)
+    if purge_cache_dir and os.path.isdir(cache_dir):
+        shutil.rmtree(cache_dir)
+        os.mkdir(cache_dir)
+
+        from torch_sendnn.backends import cache
+
+        # Explicitly clear cache paths from the global torch sendnn graph;
+        # TODO would be better to add a helper to explicitly do this in
+        # torch sendnn
+        cache.cache = {}
 
 
 @pytest.fixture
@@ -865,12 +867,14 @@ def use_cached_model():
     torch.manual_seed(42)
     torch.set_grad_enabled(False)
     _reset_cache_settings(purge_cache_dir=True)
+
     model_path, batch_size, seq_length, max_new_tokens = _get_cache_test_params()
     micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
 
     def verify_cache_miss():
+        cache_dir = os.environ.get("TORCH_SENDNN_CACHE_DIR")
         updated_cache_len = (
-            len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
+            len(os.listdir(cache_dir)) if os.path.isdir(cache_dir) else 0
         )
         assert updated_cache_len == max_new_tokens, (
             "cache directory not populated on cache miss"
@@ -915,53 +919,6 @@ def _get_cache_test_params():
     return [model_path, batch_size, seq_length, max_new_tokens]
 
 
-def test_cache(use_cached_model):
-    torch.manual_seed(42)
-    torch.set_grad_enabled(False)
-    _reset_cache_settings(purge_cache_dir=False)
-
-    model_path, batch_size, seq_length, max_new_tokens = _get_cache_test_params()
-    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
-
-    def verify_cache_hit():
-        updated_cache_len = (
-            len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
-        )
-        assert updated_cache_len == max_new_tokens, (
-            "cache miss occurred when hit was expected"
-        )
-
-    dprint(
-        f"testing: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, for cache hit"
-    )
-
-    # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
-    gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
-
-    model = get_aiu_model(
-        model_path,
-        gptq_kwargs_aiu,
-        persistent_model_inst=None,
-    )
-
-    validation_model = get_cpu_model(
-        model_path,
-        gptq_kwargs_cpu,
-        micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
-    )
-
-    _run_cpu_aiu_validation_test(
-        model_path,
-        batch_size,
-        seq_length,
-        max_new_tokens,
-        validation_model,
-        model,
-        micro_model_path,
-        verify_cache_state=verify_cache_hit,
-    )
-
-
 @pytest.mark.parametrize(
     "model_path,batch_size,seq_length,max_new_tokens", common_shapes
 )
@@ -999,4 +956,52 @@ def test_common_shapes(
         validation_model,
         model,
         micro_model_path,
+    )
+
+
+def test_cache(use_cached_model):
+    torch.manual_seed(42)
+    torch.set_grad_enabled(False)
+    _reset_cache_settings(purge_cache_dir=False)
+
+    model_path, batch_size, seq_length, max_new_tokens = _get_cache_test_params()
+    micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
+
+    def verify_cache_hit():
+        cache_dir = os.environ.get("TORCH_SENDNN_CACHE_DIR")
+        updated_cache_len = (
+            len(os.listdir(cache_dir)) if os.path.isdir(cache_dir) else 0
+        )
+        assert updated_cache_len == max_new_tokens, (
+            "cache miss occurred when hit was expected"
+        )
+
+    dprint(
+        f"testing: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, for cache hit"
+    )
+
+    # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
+    gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
+
+    model = get_aiu_model(
+        model_path,
+        gptq_kwargs_aiu,
+        persistent_model_inst=None,
+    )
+
+    validation_model = get_cpu_model(
+        model_path,
+        gptq_kwargs_cpu,
+        micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
+    )
+
+    _run_cpu_aiu_validation_test(
+        model_path,
+        batch_size,
+        seq_length,
+        max_new_tokens,
+        validation_model,
+        model,
+        micro_model_path,
+        verify_cache_state=verify_cache_hit,
     )
