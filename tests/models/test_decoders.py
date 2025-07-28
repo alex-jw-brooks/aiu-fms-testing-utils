@@ -455,7 +455,7 @@ def _check_failure_thresholds(
         print("passed validation level 0")
 
 
-def get_common_model_kwargs(is_gptq, model_path):
+def _get_common_model_kwargs(is_gptq, model_path):
     if is_gptq:
         return {}
     # Get the micro model kwargs
@@ -491,9 +491,9 @@ def get_common_model_kwargs(is_gptq, model_path):
 
 # NOTE micro_model_state_dict should be None if USE_MICRO_MODELS is true
 # Otherwise it should be model.state_dict() where model is the AIU model
-def get_cpu_model(model_path, gptq_kwargs, micro_model_state_dict=None):
+def _get_cpu_model(model_path, gptq_kwargs, micro_model_state_dict=None):
     is_gptq = len(gptq_kwargs) != 0
-    model_kwargs = get_common_model_kwargs(is_gptq, model_path)
+    model_kwargs = _get_common_model_kwargs(is_gptq, model_path)
 
     # prepare the cpu model
     validation_model = get_model(
@@ -512,9 +512,9 @@ def get_cpu_model(model_path, gptq_kwargs, micro_model_state_dict=None):
     return validation_model
 
 
-def get_aiu_model(model_path, gptq_kwargs, persistent_model_inst):
+def _get_aiu_model(model_path, gptq_kwargs, persistent_model_inst):
     is_gptq = len(gptq_kwargs) != 0
-    model_kwargs = get_common_model_kwargs(is_gptq, model_path)
+    model_kwargs = _get_common_model_kwargs(is_gptq, model_path)
 
     # prepare the AIU model; use the persistent model fixure if the test has it
     if persistent_model_inst is not None:
@@ -538,7 +538,7 @@ def get_aiu_model(model_path, gptq_kwargs, persistent_model_inst):
     return aiu_model
 
 
-def get_device_validation_information(
+def _get_device_validation_information(
     model_path,
     batch_size,
     seq_length,
@@ -601,7 +601,7 @@ def get_device_validation_information(
     return validation_info
 
 
-def resolve_thresholds(model_path, micro_model_path):
+def _resolve_thresholds(model_path, micro_model_path):
     # if we do not have real model weights, use a default_metrics_threshold
     if USE_MICRO_MODELS and micro_model_path is None:
         ce_threshold, diff_threshold = DEFAULT_METRICS_THRESHOLD
@@ -620,7 +620,7 @@ def resolve_thresholds(model_path, micro_model_path):
     return ce_threshold, diff_threshold
 
 
-def run_validation_level_0(
+def _run_validation_level_0(
     model_path,
     batch_size,
     seq_length,
@@ -631,7 +631,7 @@ def run_validation_level_0(
     extra_kwargs,
     model,
 ):
-    cpu_validation_info = get_device_validation_information(
+    cpu_validation_info = _get_device_validation_information(
         model_path=model_path,
         batch_size=batch_size,
         seq_length=seq_length,
@@ -655,7 +655,7 @@ def run_validation_level_0(
     )
 
     # first test validation level 0
-    aiu_validation_info = get_device_validation_information(
+    aiu_validation_info = _get_device_validation_information(
         model_path=model_path,
         batch_size=batch_size,
         seq_length=seq_length,
@@ -685,7 +685,7 @@ def run_validation_level_0(
     return len(failed_responses) != 0, validation_zero_info
 
 
-def run_validation_level_1(
+def _run_validation_level_1(
     model_path,
     batch_size,
     seq_length,
@@ -705,7 +705,7 @@ def run_validation_level_1(
     for i in range(iters):
         # for iteration 0, we have computed the cpu validation info in the prior step for seed=0, so skip
         if i != 0:
-            cpu_validation_info = get_device_validation_information(
+            cpu_validation_info = _get_device_validation_information(
                 model_path=model_path,
                 batch_size=batch_size,
                 seq_length=seq_length,
@@ -733,7 +733,7 @@ def run_validation_level_1(
             cpu_static_tokens = validation_zero_info["cpu_static_tokens"]
             eos_indexes = validation_zero_info["eos_indexes"]
 
-        aiu_validation_info = get_device_validation_information(
+        aiu_validation_info = _get_device_validation_information(
             model_path=model_path,
             batch_size=batch_size,
             seq_length=seq_length,
@@ -758,7 +758,7 @@ def run_validation_level_1(
         # only consider those metrics captured prior to the eos
         level_1_metrics = __filter_before_eos(level_1_metrics, eos_indexes)
 
-        ce_threshold, diff_threshold = resolve_thresholds(model_path, micro_model_path)
+        ce_threshold, diff_threshold = _resolve_thresholds(model_path, micro_model_path)
 
         # get all failed responses for each metric
         ce_fail_responses = filter_failed_level_1_cases(
@@ -801,7 +801,7 @@ def _run_cpu_aiu_validation_test(
     )
 
     # Run validation level 0
-    failed_validation_level_0, validation_zero_info = run_validation_level_0(
+    failed_validation_level_0, validation_zero_info = _run_validation_level_0(
         model_path,
         batch_size,
         seq_length,
@@ -825,7 +825,7 @@ def _run_cpu_aiu_validation_test(
             dprint("failed validation level 0, testing validation level 1")
         else:
             dprint("passed validation level 0, testing validation level 1")
-        run_validation_level_1(
+        _run_validation_level_1(
             model_path,
             batch_size,
             seq_length,
@@ -887,13 +887,13 @@ def use_cached_model():
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
 
-    model = get_aiu_model(
+    model = _get_aiu_model(
         model_path,
         gptq_kwargs_aiu,
         persistent_model_inst=None,
     )
 
-    validation_model = get_cpu_model(
+    validation_model = _get_cpu_model(
         model_path,
         gptq_kwargs_cpu,
         micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
@@ -912,9 +912,11 @@ def use_cached_model():
 
 
 def _get_cache_test_params():
-    model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000"  # ibm-granite/granite-3.3-8b-instruct"
-    batch_size = 1  # common_batch_sizes[0]
-    seq_length = 128  # common_seq_lengths[0]
+    # NOTE - currently we always use granite 3.3 for the cache test,
+    # TODO make this configurable as tests are refactored
+    model_path = GRANITE_3p3_8B_INSTRUCT
+    batch_size = COMMON_BATCH_SIZES[0]
+    seq_length = COMMON_SEQ_LENGTHS[0]
     max_new_tokens = COMMON_MAX_NEW_TOKENS[0]
     return [model_path, batch_size, seq_length, max_new_tokens]
 
@@ -937,13 +939,13 @@ def test_common_shapes(
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
 
-    model = get_aiu_model(
+    model = _get_aiu_model(
         model_path,
         gptq_kwargs_aiu,
         persistent_model_inst=persistent_model,
     )
 
-    validation_model = get_cpu_model(
+    validation_model = _get_cpu_model(
         model_path,
         gptq_kwargs_cpu,
         micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
@@ -983,13 +985,13 @@ def test_cache(use_cached_model):
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
 
-    model = get_aiu_model(
+    model = _get_aiu_model(
         model_path,
         gptq_kwargs_aiu,
         persistent_model_inst=None,
     )
 
-    validation_model = get_cpu_model(
+    validation_model = _get_cpu_model(
         model_path,
         gptq_kwargs_cpu,
         micro_model_state_dict=model.state_dict() if USE_MICRO_MODELS else None,
