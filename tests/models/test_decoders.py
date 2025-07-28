@@ -168,7 +168,6 @@ if COMPILE_DYNAMIC_SENDNN:
     os.environ["VLLM_DT_MAX_BATCH_SIZE"] = str(max(max(COMMON_BATCH_SIZES), 2))
 
 
-
 # thresholds are chosen based on 1024 tokens per sequence
 # 1% error threshold rate between cpu fp32 and cuda fp16
 # if a models failure thresholds do not exist in this dict, default to the default_metrics_threshold defined above
@@ -236,6 +235,7 @@ __custom_adapter = {"architecture": "llama", "source": "fms_aiu"}
 # Directory to be used for testing torch sendnn caching
 CACHE_DIR = os.path.join(os.getcwd(), ".cache")
 
+
 @pytest.fixture(autouse=True)
 def reset_compiler():
     yield  # run the test
@@ -243,8 +243,9 @@ def reset_compiler():
         torch.compiler.reset()
         torch._dynamo.reset()
         os.environ.pop("COMPILATION_MODE", None)
-        os.environ.pop('TORCH_SENDNN_CACHE_ENABLE', None)
+        os.environ.pop("TORCH_SENDNN_CACHE_ENABLE", None)
         # FIXME - this fixture breaks stuff if we don't run the cache test first
+
 
 # TODO: Currently, gptq does not have the same level of support as non-gptq models for get_model. This method provides the extra requirements for gptq for get_model,
 #  however ideally, these fixes should be done in foundation-model-stack.
@@ -289,6 +290,7 @@ def __maybe_get_gptq_kwargs(model_path):
     except KeyError:
         pass
     return gptq_kwargs_aiu, gptq_kwargs_cpu
+
 
 def __prepare_inputs(batch_size, seq_length, tokenizer, seed=0):
     prompts_and_sizes = sample_sharegpt_requests(
@@ -340,10 +342,21 @@ def __get_validation_info_full_path(
 
 
 def __load_validation_info(
-    model_path, batch_size, seq_length, max_new_tokens, tokenizer, seed, device_type,
+    model_path,
+    batch_size,
+    seq_length,
+    max_new_tokens,
+    tokenizer,
+    seed,
+    device_type,
 ):
     full_path = __get_validation_info_full_path(
-        model_path, batch_size, seq_length, max_new_tokens, seed, device_type,
+        model_path,
+        batch_size,
+        seq_length,
+        max_new_tokens,
+        seed,
+        device_type,
     )
 
     if os.path.exists(full_path):
@@ -411,6 +424,7 @@ class PersistentModel:
 def persistent_model():
     return PersistentModel()
 
+
 ##### Common utils
 # metric calculator based on the cross-entropy and mean diff for each decode step
 def _metric_calculator(r: torch.Tensor, t: torch.Tensor):
@@ -425,7 +439,10 @@ def _metric_calculator(r: torch.Tensor, t: torch.Tensor):
     )
     return (cross_entropy, diff)
 
-def _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens):
+
+def _check_failure_thresholds(
+    diff_fail_responses_list, ce_fail_responses_list, total_tokens
+):
     # test the failure rates for across all tokens
     diff_failure_rate = len(diff_fail_responses_list) / total_tokens
     ce_failure_rate = len(ce_fail_responses_list) / total_tokens
@@ -442,6 +459,7 @@ def _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, 
         print("passed validation level 1")
     else:
         print("passed validation level 0")
+
 
 def get_common_model_kwargs(is_gptq, model_path):
     if is_gptq:
@@ -475,6 +493,7 @@ def get_common_model_kwargs(is_gptq, model_path):
         **micro_model_kwargs,
         **distributed_kwargs,
     }
+
 
 # NOTE micro_model_state_dict should be None if USE_MICRO_MODELS is true
 # Otherwise it should be model.state_dict() where model is the AIU model
@@ -514,20 +533,41 @@ def get_aiu_model(model_path, gptq_kwargs, persistent_model_inst):
             device_type="cpu",
             data_type=None if is_gptq else torch.float16,
             fused_weights=False,
-            **gptq_kwargs, **model_kwargs,
+            **gptq_kwargs,
+            **model_kwargs,
         )
         aiu_model.eval()
         aiu_model.compile(
-            backend="sendnn", options={"sendnn.dynamic": COMPILE_DYNAMIC_SENDNN},
+            backend="sendnn",
+            options={"sendnn.dynamic": COMPILE_DYNAMIC_SENDNN},
         )
     return aiu_model
 
 
-def get_device_validation_information(model_path, batch_size, seq_length, max_new_tokens, post_iteration_hook, model, input_ids, extra_kwargs, token_iter, device="aiu", tokenizer=None, only_last_token=None):
+def get_device_validation_information(
+    model_path,
+    batch_size,
+    seq_length,
+    max_new_tokens,
+    post_iteration_hook,
+    model,
+    input_ids,
+    extra_kwargs,
+    token_iter,
+    device="aiu",
+    tokenizer=None,
+    only_last_token=None,
+):
     # For CPU, we try to load it from disk first if it exists
     if device == "cpu":
         cpu_validation_info = __load_validation_info(
-            model_path, batch_size, seq_length, max_new_tokens, tokenizer, token_iter, device,
+            model_path,
+            batch_size,
+            seq_length,
+            max_new_tokens,
+            tokenizer,
+            token_iter,
+            device,
         )
         if cpu_validation_info is not None:
             return cpu_validation_info
@@ -556,10 +596,16 @@ def get_device_validation_information(model_path, batch_size, seq_length, max_ne
         dprint(f"saving {device} validation for - iter={token_iter}")
         validation_info.save(
             __get_validation_info_full_path(
-                model_path, batch_size, seq_length, max_new_tokens, token_iter, device,
+                model_path,
+                batch_size,
+                seq_length,
+                max_new_tokens,
+                token_iter,
+                device,
             )
         )
     return validation_info
+
 
 def resolve_thresholds(model_path, micro_model_path):
     # if we do not have real model weights, use a default_metrics_threshold
@@ -571,9 +617,7 @@ def resolve_thresholds(model_path, micro_model_path):
         if USE_MICRO_MODELS:
             ce_threshold, diff_threshold = FAIL_THRESHOLDS.get(
                 (model_path, True),
-                FAIL_THRESHOLDS.get(
-                    (model_path, False), DEFAULT_METRICS_THRESHOLD
-                ),
+                FAIL_THRESHOLDS.get((model_path, False), DEFAULT_METRICS_THRESHOLD),
             )
         else:
             ce_threshold, diff_threshold = FAIL_THRESHOLDS.get(
@@ -581,7 +625,18 @@ def resolve_thresholds(model_path, micro_model_path):
             )
     return ce_threshold, diff_threshold
 
-def run_validation_level_0(model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model):
+
+def run_validation_level_0(
+    model_path,
+    batch_size,
+    seq_length,
+    max_new_tokens,
+    tokenizer,
+    validation_model,
+    input_ids,
+    extra_kwargs,
+    model,
+):
     cpu_validation_info = get_device_validation_information(
         model_path=model_path,
         batch_size=batch_size,
@@ -636,7 +691,19 @@ def run_validation_level_0(model_path, batch_size, seq_length, max_new_tokens, t
     return len(failed_responses) != 0, validation_zero_info
 
 
-def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, tokenizer, validation_model, input_ids, extra_kwargs, model, micro_model_path, validation_zero_info):
+def run_validation_level_1(
+    model_path,
+    batch_size,
+    seq_length,
+    max_new_tokens,
+    tokenizer,
+    validation_model,
+    input_ids,
+    extra_kwargs,
+    model,
+    micro_model_path,
+    validation_zero_info,
+):
     iters = 1024 // max_new_tokens
     ce_fail_responses_list = []
     diff_fail_responses_list = []
@@ -644,7 +711,6 @@ def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, t
     for i in range(iters):
         # for iteration 0, we have computed the cpu validation info in the prior step for seed=0, so skip
         if i != 0:
-
             cpu_validation_info = get_device_validation_information(
                 model_path=model_path,
                 batch_size=batch_size,
@@ -658,9 +724,7 @@ def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, t
                 device="cpu",
                 tokenizer=tokenizer,
             )
-            dprint(
-                f"cpu validation info extracted for validation level 1 - iter={i}"
-            )
+            dprint(f"cpu validation info extracted for validation level 1 - iter={i}")
 
             cpu_static_tokens = cpu_validation_info.get_info("tokens")
             eos_indexes = __find_eos_index(
@@ -691,7 +755,6 @@ def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, t
         )
         dprint(f"aiu validation info extracted for validation level 1 - iter={i}")
 
-
         # capture all level 1 metrics
         level_1_metrics = capture_level_1_metrics(
             cpu_validation_info.get_info("logits"),
@@ -716,11 +779,22 @@ def run_validation_level_1(model_path, batch_size, seq_length, max_new_tokens, t
         diff_fail_responses_list.extend(diff_fail_responses)
         total_tokens += len(level_1_metrics)
 
-    _check_failure_thresholds(diff_fail_responses_list, ce_fail_responses_list, total_tokens)
+    _check_failure_thresholds(
+        diff_fail_responses_list, ce_fail_responses_list, total_tokens
+    )
 
 
 ##### Test definitions
-def _run_cpu_aiu_validation_test(model_path, batch_size, seq_length, max_new_tokens, cpu_model, aiu_model, micro_model_path, verify_cache_state=None):
+def _run_cpu_aiu_validation_test(
+    model_path,
+    batch_size,
+    seq_length,
+    max_new_tokens,
+    cpu_model,
+    aiu_model,
+    micro_model_path,
+    verify_cache_state=None,
+):
     # Get the tokenizer and AIU / CPU models to compare
     tokenizer = tokenizers.get_tokenizer(model_path)
 
@@ -734,7 +808,15 @@ def _run_cpu_aiu_validation_test(model_path, batch_size, seq_length, max_new_tok
 
     # Run validation level 0
     failed_validation_level_0, validation_zero_info = run_validation_level_0(
-        model_path, batch_size, seq_length, max_new_tokens, tokenizer, cpu_model, input_ids, extra_kwargs, aiu_model
+        model_path,
+        batch_size,
+        seq_length,
+        max_new_tokens,
+        tokenizer,
+        cpu_model,
+        input_ids,
+        extra_kwargs,
+        aiu_model,
     )
 
     # Used only for cache tests; this is a nonparametric closure that
@@ -750,7 +832,17 @@ def _run_cpu_aiu_validation_test(model_path, batch_size, seq_length, max_new_tok
         else:
             dprint("passed validation level 0, testing validation level 1")
         run_validation_level_1(
-            model_path, batch_size, seq_length, max_new_tokens, tokenizer, cpu_model, input_ids, extra_kwargs, aiu_model, micro_model_path, validation_zero_info,
+            model_path,
+            batch_size,
+            seq_length,
+            max_new_tokens,
+            tokenizer,
+            cpu_model,
+            input_ids,
+            extra_kwargs,
+            aiu_model,
+            micro_model_path,
+            validation_zero_info,
         )
 
 
@@ -777,13 +869,16 @@ def use_cached_model():
     micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
 
     def verify_cache_miss():
-        updated_cache_len = len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
-        assert updated_cache_len ==  max_new_tokens, (
-                "cache directory not populated on cache miss"
-            )
+        updated_cache_len = (
+            len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
+        )
+        assert updated_cache_len == max_new_tokens, (
+            "cache directory not populated on cache miss"
+        )
 
-
-    dprint(f"Setting up cache [i.e., cache miss check] for model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}")
+    dprint(
+        f"Setting up cache [i.e., cache miss check] for model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}"
+    )
 
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
@@ -811,10 +906,11 @@ def use_cached_model():
         verify_cache_state=verify_cache_miss,
     )
 
+
 def _get_cache_test_params():
-    model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000" # ibm-granite/granite-3.3-8b-instruct"
-    batch_size = 1# common_batch_sizes[0]
-    seq_length = 128#common_seq_lengths[0]
+    model_path = "/models/tiny-models/granite-3.3-8b-layers-3-step-100000"  # ibm-granite/granite-3.3-8b-instruct"
+    batch_size = 1  # common_batch_sizes[0]
+    seq_length = 128  # common_seq_lengths[0]
     max_new_tokens = COMMON_MAX_NEW_TOKENS[0]
     return [model_path, batch_size, seq_length, max_new_tokens]
 
@@ -828,11 +924,16 @@ def test_cache(use_cached_model):
     micro_model_path = MICRO_MODEL_MAPPING.get(model_path, None)
 
     def verify_cache_hit():
-        updated_cache_len = len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
-        assert updated_cache_len ==  max_new_tokens, (
+        updated_cache_len = (
+            len(os.listdir(CACHE_DIR)) if os.path.isdir(CACHE_DIR) else 0
+        )
+        assert updated_cache_len == max_new_tokens, (
             "cache miss occurred when hit was expected"
         )
-    dprint(f"testing: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, for cache hit")
+
+    dprint(
+        f"testing: model={model_path}, batch_size={batch_size}, seq_length={seq_length}, max_new_tokens={max_new_tokens}, micro_model={USE_MICRO_MODELS}, for cache hit"
+    )
 
     # we don't currently support inferring gptq from get_model, so we must use an adapter with hf_configured
     gptq_kwargs_aiu, gptq_kwargs_cpu = __maybe_get_gptq_kwargs(model_path)
@@ -859,6 +960,7 @@ def test_cache(use_cached_model):
         micro_model_path,
         verify_cache_state=verify_cache_hit,
     )
+
 
 @pytest.mark.parametrize(
     "model_path,batch_size,seq_length,max_new_tokens", common_shapes
@@ -898,5 +1000,3 @@ def test_common_shapes(
         model,
         micro_model_path,
     )
-
-
